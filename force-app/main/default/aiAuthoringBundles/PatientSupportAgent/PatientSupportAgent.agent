@@ -1,0 +1,128 @@
+system:
+    instructions: |You are a Patient Support Assistant for a global healthcare provider.
+                   You help patients with questions about their insurance benefits, appointment scheduling, prescription refills, and patient portal access.
+                   Always respond with empathy and use plain, easy-to-understand language.
+                   Never fabricate medical, insurance, or clinical information not found in the knowledge base. If you cannot find an answer, say so honestly and offer to connect the patient with a human agent.
+    messages:
+        welcome: "Hello! I'm your Patient Support Assistant. I can help you with questions about your insurance benefits, appointments, prescriptions, and your patient portal. How can I help you today?"
+        error: "I'm sorry, something went wrong on my end. Please try again or call Member Services at 1-800-555-0100 for immediate assistance."
+
+access:
+    default_agent_user: "agentforce_service_agent2.sf4e6prvi7zd.vgto8ljokjye@orgfarm.salesforce.com"
+
+config:
+    developer_name: "PatientSupportAgent"
+    agent_label: "Patient Support Agent"
+    description: "FAQ agent that answers common patient questions grounded on the Patient Support Knowledge Base covering insurance benefits, appointment scheduling, prescription refills, and patient portal access."
+    runtime:
+        streaming: True
+        thought_chunks: False
+        citation: True
+        groundedness: True
+        reset_to_initial_node: False
+        user_skills: False
+
+variables:
+    EndUserId: linked string
+        source: @MessagingSession.MessagingEndUserId
+        description: "Messaging End User ID"
+    RoutableId: linked string
+        source: @MessagingSession.Id
+        description: "Messaging Session ID"
+    ContactId: linked string
+        source: @MessagingEndUser.ContactId
+        description: "Contact ID"
+
+knowledge:
+    rag_feature_config_id: "ARFPC_1JDg7000006VyFlGAK"
+    citations_enabled: True
+    citations_url: ""
+
+language:
+    default_locale: "en_US"
+    additional_locales: ""
+    all_additional_locales: False
+
+start_agent agent_router:
+    label: "Agent Router"
+    description: "Routes patient requests to the FAQ handler or escalation"
+    reasoning:
+        instructions: ->
+            |Route the patient's request. Send healthcare FAQ questions to {!@actions.go_to_patient_faq}.
+             Use {!@actions.go_to_escalation} only when the patient explicitly asks to speak with a human or the topic is clearly outside healthcare support.
+        actions:
+            go_to_patient_faq: @utils.transition to @subagent.patient_faq
+                description: "Route to the FAQ handler for healthcare questions"
+            go_to_escalation: @utils.transition to @subagent.escalation
+                description: "Transfer to a human agent"
+
+subagent patient_faq:
+    label: "Patient FAQ"
+    description: "Answers patient questions grounded on the Patient Support Knowledge Base"
+    reasoning:
+        instructions: ->
+            |For every patient question, call {!@actions.answer_question} before responding.
+             If the knowledge summary it returns addresses the question, use it as your answer. Keep responses empathetic, clear, and in plain language. Do not add any information beyond what {!@actions.answer_question} returns.
+             If the knowledge summary is empty or does not address the question, do NOT fabricate an answer. Instead, tell the patient honestly that you were unable to find that information, and ask if they would like to be transferred to a human agent who can help. If the patient confirms they want to be transferred, use {!@actions.go_to_escalation}.
+        actions:
+            answer_question: @actions.AnswerQuestionsWithKnowledge
+                with query = ...
+                with citationsUrl = @knowledge.citations_url
+                with ragFeatureConfigId = @knowledge.rag_feature_config_id
+                with citationsEnabled = @knowledge.citations_enabled
+            go_to_escalation: @utils.transition to @subagent.escalation
+                description: "Transfer the patient to a human agent when the knowledge base cannot answer their question or when they request a human"
+    actions:
+        AnswerQuestionsWithKnowledge:
+            description: "Answers patient questions by searching the Patient Support Knowledge Base covering insurance benefits, appointment scheduling, prescription refills, and patient portal access."
+            inputs:
+                query: string
+                    description: "Required. A string created by generative AI to be used in the knowledge article search."
+                    label: "Query"
+                    is_required: True
+                    is_user_input: True
+                citationsUrl: string = @knowledge.citations_url
+                    description: "The URL to use for citations for custom Agents."
+                    label: "Citations Url"
+                    is_required: False
+                    is_user_input: True
+                ragFeatureConfigId: string = @knowledge.rag_feature_config_id
+                    description: "The RAG Feature ID to use for grounding this copilot action invocation."
+                    label: "RAG Feature Configuration Id"
+                    is_required: False
+                    is_user_input: True
+                citationsEnabled: boolean = @knowledge.citations_enabled
+                    description: "Whether or not citations are enabled."
+                    label: "Citations Enabled"
+                    is_required: False
+                    is_user_input: True
+            outputs:
+                knowledgeSummary: object
+                    description: "A string formatted as rich text that includes a summary of the information retrieved from the knowledge articles and citations to those articles."
+                    label: "Knowledge Summary"
+                    complex_data_type_name: "lightning__richTextType"
+                    filter_from_agent: False
+                    is_displayable: True
+                citationSources: object
+                    description: "Source links for the chunks in the hydrated prompt that's used by the planner service."
+                    label: "Citation Sources"
+                    complex_data_type_name: "@apexClassType/AiCopilot__GenAiCitationInput"
+                    filter_from_agent: False
+                    is_displayable: False
+            target: "standardInvocableAction://streamKnowledgeSearch"
+            label: "Answer Questions with Knowledge"
+            require_user_confirmation: False
+            include_in_progress_indicator: True
+            progress_indicator_message: "Searching patient support knowledge base..."
+            source: "EmployeeCopilot__AnswerQuestionsWithKnowledge"
+
+subagent escalation:
+    label: "Escalation"
+    description: "Transfers the patient to a human agent"
+    reasoning:
+        instructions: ->
+            |Before transferring, always respond to the patient first with this message: "If you are experiencing a medical emergency, please call 911 or go to your nearest emergency room immediately." Then acknowledge their request warmly and let them know you are connecting them with a member of the support team.
+             After responding, use {!@actions.escalate_to_human} to complete the transfer.
+        actions:
+            escalate_to_human: @utils.escalate
+                description: "Transfer to a human agent"
